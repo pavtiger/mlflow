@@ -440,6 +440,7 @@ from mlflow.server.handlers import (
     _get_ajax_path,
     _get_model_registry_store,
     _get_normalized_request_json,
+    _get_paths,
     _get_request_message,
     _get_scoped_experiment_ids,
     _get_tracking_store,
@@ -6102,6 +6103,9 @@ _PUBLIC_ROUTE_SUFFIXES = (
 # before-request validator.
 _HANDLER_INTERNAL_AUTHZ_SUFFIXES = (
     "/mlflow/runs/search",
+    # search-lite self-authorizes in its handler with the same
+    # auth.filter_experiment_ids guard as legacy search.
+    "/mlflow/runs/search-lite",
     "/graphql",
 )
 
@@ -7741,6 +7745,25 @@ for _artifact_list_path in (
     AFTER_REQUEST_HANDLERS[(_add_static_prefix(_artifact_list_path), "GET")] = (
         filter_list_artifacts_proxy
     )
+
+# The projected run reads (search-lite / get-lite / data-keys) are plain-JSON routes
+# rather than proto-backed service endpoints, so they are absent from the auto-built
+# tables above. search-lite self-authorizes inside its handler (see
+# _HANDLER_INTERNAL_AUTHZ_SUFFIXES). get-lite gets the same per-run read validator as
+# legacy GetRun; data-keys gets a batch validator requiring read on every requested
+# run. search-lite/get-lite reuse the legacy model-link redactors so
+# mlflow.loggedModels protection is not bypassed.
+from mlflow.server.projected_runs import validate_can_read_data_keys
+
+for _projected_run_path in _get_paths("/mlflow/runs/get-lite"):
+    BEFORE_REQUEST_VALIDATORS[(_projected_run_path, "POST")] = validate_can_read_run
+for _projected_run_path in _get_paths("/mlflow/runs/data-keys"):
+    BEFORE_REQUEST_VALIDATORS[(_projected_run_path, "POST")] = validate_can_read_data_keys
+for _projected_run_path in _get_paths("/mlflow/runs/search-lite"):
+    AFTER_REQUEST_HANDLERS[(_projected_run_path, "POST")] = redact_search_runs_model_links
+for _projected_run_path in _get_paths("/mlflow/runs/get-lite"):
+    AFTER_REQUEST_HANDLERS[(_projected_run_path, "POST")] = redact_get_run_model_links
+del _projected_run_path
 
 
 @catch_mlflow_exception

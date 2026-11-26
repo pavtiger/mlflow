@@ -444,6 +444,7 @@ from mlflow.utils.server_info import (
     SERVER_INFO_MULTIPART_UPLOADS_ENABLED,
     SERVER_INFO_PRESIGNED_UPLOAD_MODEL_ID_SUPPORTED,
     SERVER_INFO_PRESIGNED_UPLOAD_RUN_ID_SUPPORTED,
+    SERVER_INFO_RUN_PROJECTION_ENABLED,
     SERVER_INFO_SKILL_CONTENT_MAX_FILES,
     SERVER_INFO_SKILL_CONTENT_MAX_SIZE,
     SERVER_INFO_STORE_TYPE,
@@ -7916,6 +7917,11 @@ def build_server_info_payload() -> dict[str, Any]:
         },
         SERVER_INFO_TRACKING_AUTH: MLFLOW_SERVER_INFO_TRACKING_AUTH.get() or "",
         SERVER_INFO_ARTIFACTS_PRESIGNED_ONLY: MLFLOW_ARTIFACTS_PRESIGNED_ONLY.get(),
+        # The lite run reads (search-lite / get-lite / data-keys) are served only
+        # by the SQLAlchemy store family (plain or workspace-aware); FileStore /
+        # artifacts-only / unknown stores advertise false so clients keep using
+        # the legacy endpoints.
+        SERVER_INFO_RUN_PROJECTION_ENABLED: store_type == "SqlStore",
     }
 
 
@@ -8138,6 +8144,9 @@ def get_endpoints(get_handler=get_handler):
     Returns:
         List of tuples (path, handler, methods)
     """
+    # Imported lazily: mlflow.server.projected_runs imports helpers from this module.
+    from mlflow.server.projected_runs import get_projected_run_endpoints
+
     return (
         get_service_endpoints(MlflowService, get_handler)
         + get_internal_online_scoring_endpoints()
@@ -8157,6 +8166,9 @@ def get_endpoints(get_handler=get_handler):
         + get_issues_detection_endpoints()
         + get_genai_evaluate_endpoints()
         + get_job_endpoints()
+        # Projected (lightweight) run reads: search-lite / get-lite / data-keys
+        # on both the api and ajax-api prefixes.
+        + get_projected_run_endpoints()
     )
 
 

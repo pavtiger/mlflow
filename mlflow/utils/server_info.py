@@ -28,6 +28,9 @@ SERVER_INFO_MODEL_ARTIFACT_PRESIGNED_DOWNLOADS_SUPPORTED = (
 SERVER_INFO_FEATURES_ENABLED = "features_enabled"
 SERVER_INFO_TRACKING_AUTH = "tracking_auth"
 SERVER_INFO_ARTIFACTS_PRESIGNED_ONLY = "artifacts_presigned_only"
+# Capability flag for the projected run reads (search-lite / get-lite /
+# data-keys) served by mlflow.server.projected_runs.
+SERVER_INFO_RUN_PROJECTION_ENABLED = "run_projection_enabled"
 
 _SERVER_INFO_CACHE_MAXSIZE = 16
 _SERVER_INFO_CACHE_TTL_SECONDS = 60.0
