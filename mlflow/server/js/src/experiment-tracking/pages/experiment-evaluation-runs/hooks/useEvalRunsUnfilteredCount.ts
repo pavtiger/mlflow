@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useQueries } from '@mlflow/mlflow/src/common/utils/reactQueryHooks';
 import { isIssueDetectionRun } from '../../../components/experiment-page/hooks/useExperimentEvaluationRunsData';
 import { MlflowService } from '../../../sdk/MlflowService';
+import { getEvaluationRunProjection, routeProjectedSearchRuns } from '../../../runProjection/runProjection';
 import type { SearchRunsApiResponse } from '../../../types';
 
 // Same split as `useExperimentEvaluationRunsData`: runs that logged a model are training runs, and
@@ -26,14 +27,23 @@ export const useEvalRunsUnfilteredCount = ({ experimentId, enabled }: { experime
           filter: '',
           max_results: 50,
         };
-        let response = await MlflowService.searchRuns(requestBody);
+        // Only outputs.modelOutputs and the mlflow.runType tag are consumed here, so the constant
+        // evaluation projection is used on servers with search-lite; legacy servers keep the
+        // stripped legacy search.
+        const searchPage = (payload: typeof requestBody & { page_token?: string }) =>
+          routeProjectedSearchRuns(
+            { ...payload, projection: getEvaluationRunProjection() },
+            MlflowService.searchRuns,
+            MlflowService.searchRunsLite,
+          );
+        let response = await searchPage(requestBody);
         let runs = countable(response.runs);
         // An experiment whose newest 50 runs are all detection runs would otherwise count zero,
         // which the page reads as "this experiment has no runs" and answers with first-run
         // onboarding instead of the filtered-empty state. Page on until something counts, so the
         // total stays a lower bound rather than becoming a wrong zero.
         while (runs.length === 0 && response.next_page_token) {
-          response = await MlflowService.searchRuns({ ...requestBody, page_token: response.next_page_token });
+          response = await searchPage({ ...requestBody, page_token: response.next_page_token });
           runs = countable(response.runs);
         }
         return { ...response, runs };

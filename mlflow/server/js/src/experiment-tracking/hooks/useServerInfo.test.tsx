@@ -6,6 +6,8 @@ import { setupServer } from '../../common/utils/setup-msw';
 import {
   useServerInfo,
   useIsFileStore,
+  ensureServerInfo,
+  getRunProjectionEnabledSync,
   useTraceArchivalEnabled,
   useMultipartDownloadsEnabled,
   useArtifactServingEnabled,
@@ -623,5 +625,72 @@ describe('useServerInfo when the browser reports being offline', () => {
     });
 
     expect(result.current.workspacesEnabled).toBe(true);
+  });
+});
+
+describe('projected-reads capability (getRunProjectionEnabledSync / ensureServerInfo)', () => {
+  let queryClient: QueryClient;
+  let serverInfoFields: Record<string, unknown>;
+
+  setupServer(
+    rest.get('/ajax-api/3.0/mlflow/server-info', (_req, res, ctx) =>
+      res(
+        ctx.json({
+          store_type: 'SqlStore',
+          workspaces_enabled: false,
+          trace_archival_enabled: false,
+          ...serverInfoFields,
+        }),
+      ),
+    ),
+  );
+
+  beforeEach(() => {
+    queryClient = createTestQueryClient();
+    serverInfoFields = {};
+  });
+
+  afterEach(() => {
+    resetServerInfoCache();
+    queryClient.clear();
+  });
+
+  test('is tri-state: pending before load, false when absent, true when advertised', async () => {
+    renderWithProviders(<span />, queryClient);
+    expect(getRunProjectionEnabledSync()).toBeUndefined();
+
+    await waitFor(() => {
+      expect(queryClient.getQueryData<{ store_type: string }>(['serverInfo'])?.store_type).toBe('SqlStore');
+    });
+    expect(getRunProjectionEnabledSync()).toBe(false);
+
+    queryClient.setQueryData(['serverInfo'], { store_type: 'SqlStore', run_projection_enabled: true });
+    expect(getRunProjectionEnabledSync()).toBe(true);
+
+    queryClient.setQueryData(['serverInfo'], { store_type: 'SqlStore', run_projection_enabled: false });
+    expect(getRunProjectionEnabledSync()).toBe(false);
+  });
+
+  test('ensureServerInfo returns the cached value without refetching', async () => {
+    renderWithProviders(<span />, queryClient);
+    await waitFor(() => {
+      expect(queryClient.getQueryData(['serverInfo'])).toBeDefined();
+    });
+    const info = await ensureServerInfo();
+    expect(info.store_type).toBe('SqlStore');
+  });
+
+  test('ensureServerInfo joins the shared react-query request when nothing is cached', async () => {
+    // No provider rendered: the query client reference is still captured by a mounted provider.
+    renderWithProviders(<span />, queryClient);
+    queryClient.removeQueries({ queryKey: ['serverInfo'] });
+    serverInfoFields = { run_projection_enabled: true };
+
+    const [first, second] = await Promise.all([ensureServerInfo(), ensureServerInfo()]);
+    expect(first.run_projection_enabled).toBe(true);
+    expect(second).toBe(first);
+    expect(getRunProjectionEnabledSync()).toBe(true);
+    // The joined request is the shared cached one: exactly one server-info cache entry exists.
+    expect(queryClient.getQueryData(['serverInfo'])).toEqual(first);
   });
 });

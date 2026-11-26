@@ -37,6 +37,7 @@ import { useSelector } from 'react-redux';
 import { FormattedMessage, useIntl } from 'react-intl';
 import { ToggleIconButton } from '../../../../../common/components/ToggleIconButton';
 import type { ErrorWrapper } from '../../../../../common/utils/ErrorWrapper';
+import { isRunProjectionActive } from '../../../../runProjection/runProjection';
 import { LIFECYCLE_FILTER } from '../../../../constants';
 import type { UpdateExperimentViewStateFn } from '../../../../types';
 import { useExperimentIds } from '../../hooks/useExperimentIds';
@@ -428,7 +429,7 @@ export const ExperimentViewRunsControlsFilters = React.memo(
                 <DropdownMenu.IconWrapper>
                   <DownloadIcon />
                 </DropdownMenu.IconWrapper>
-                {`Download ${runsData.runInfos.length} runs`}
+                {`Download ${runsData.runInfos.length} runs${isRunProjectionActive() ? ' (visible fields)' : ''}`}
               </DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.CheckboxItem

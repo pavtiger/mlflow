@@ -22,6 +22,8 @@ import { MLFLOW_PUBLISHED_VERSION } from '../common/mlflow-published-version';
 import { MLFLOW_LOGGED_IMAGE_ARTIFACTS_PATH } from './constants';
 import { ErrorWrapper } from '../common/utils/ErrorWrapper';
 import { uploadArtifactWithPresignedUrl } from './utils/PresignedArtifactUtils';
+import type { RunProjection } from './runProjection/runProjection';
+import { coalesceAndSupersedeProjectedSearch, routeProjectedSearchRuns } from './runProjection/runProjection';
 export const RUNS_SEARCH_MAX_RESULTS = 100;
 
 export const GET_EXPERIMENT_API = 'GET_EXPERIMENT_API';
@@ -322,58 +324,107 @@ export const searchRunsPayload = ({
 
   // Array of pinned row IDs which will be fetched with another request
   runsPinned,
-}: any) => {
-  // Let's start with the base request for the runs
-  const promises = [
-    MlflowService.searchRuns({
-      experiment_ids: experimentIds,
-      filter: filter,
-      run_view_type: runViewType,
-      max_results: maxResults || RUNS_SEARCH_MAX_RESULTS,
-      order_by: orderBy,
-      page_token: pageToken,
-    }),
-  ];
 
-  // If we want to have pinned runs, fetch them as well
-  // using another request with different filter
-  if (runsPinned?.length) {
-    promises.push(
-      MlflowService.searchRuns({
-        experiment_ids: experimentIds,
-        filter: createPinnedRowsExpression(runsPinned),
-        run_view_type: ViewType.ALL,
-      }),
-    );
-  }
+  // Optional field projection for lightweight (search-lite) reads. Absent for legacy callers.
+  projection,
+}: {
+  experimentIds?: string[];
+  filter?: string;
+  runViewType?: string;
+  maxResults?: number;
+  orderBy?: string[];
+  pageToken?: string | null;
+  shouldFetchParents?: boolean;
+  runsPinned?: string[];
+  projection?: RunProjection;
+} = {}) => {
+  const executeSearch = () => {
+    // Let's start with the base request for the runs. Projected searches route to search-lite
+    // (with capability detection and a single sticky legacy fallback); legacy payloads always
+    // have the projection stripped.
+    const promises = [
+      routeProjectedSearchRuns(
+        {
+          experiment_ids: experimentIds,
+          filter: filter,
+          run_view_type: runViewType,
+          max_results: maxResults || RUNS_SEARCH_MAX_RESULTS,
+          order_by: orderBy,
+          page_token: pageToken,
+          projection,
+        },
+        MlflowService.searchRuns,
+        MlflowService.searchRunsLite,
+      ),
+    ];
 
-  // Wait for all requests to finish.
-  // - `baseSearchResponse` will contain all runs that match the requested filter
-  // - `pinnedSearchResponse` will contain all pinned runs, if any
-  // We will merge and return an array with those two collections
-  return Promise.all(promises).then(([baseSearchResponse, pinnedSearchResponse = {}]) => {
-    const response = baseSearchResponse;
-
-    if (!isObject(response)) {
-      throw new Error(`Invalid format of the runs search response: ${String(response)}`);
+    // If we want to have pinned runs, fetch them as well
+    // using another request with different filter
+    if (runsPinned?.length) {
+      promises.push(
+        routeProjectedSearchRuns(
+          {
+            experiment_ids: experimentIds,
+            filter: createPinnedRowsExpression(runsPinned),
+            run_view_type: ViewType.ALL,
+            max_results: runsPinned.length,
+            projection,
+          },
+          MlflowService.searchRuns,
+          MlflowService.searchRunsLite,
+        ),
+      );
     }
 
-    // Place aside and save runs that matched filter naturally (not the pinned ones):
-    (response as any).runsMatchingFilter = (baseSearchResponse as any).runs?.slice() || [];
+    // Wait for all requests to finish.
+    // - `baseSearchResponse` will contain all runs that match the requested filter
+    // - `pinnedSearchResponse` will contain all pinned runs, if any
+    // We will merge and return an array with those two collections
+    return Promise.all(promises).then(([baseSearchResponse, pinnedSearchResponse = {}]) => {
+      const response = baseSearchResponse;
 
-    // If we get pinned rows from the additional response, merge them into the base run list:
-    if (isArray((pinnedSearchResponse as any).runs)) {
-      if (isArray((response as any).runs)) {
-        (response as any).runs.push(...(pinnedSearchResponse as any).runs);
-      } else {
-        (response as any).runs = (pinnedSearchResponse as any).runs.slice();
+      if (!isObject(response)) {
+        throw new Error(`Invalid format of the runs search response: ${String(response)}`);
       }
-    }
 
-    // If there are any pending parents to fetch, do it before returning the response
-    const fetchParents = () => fetchMissingParents(response);
-    return shouldFetchParents ? fetchParents() : response;
-  });
+      // Place aside and save runs that matched filter naturally (not the pinned ones):
+      (response as any).runsMatchingFilter = (baseSearchResponse as any).runs?.slice() || [];
+
+      // If we get pinned rows from the additional response, merge them into the base run list:
+      if (isArray((pinnedSearchResponse as any).runs)) {
+        if (isArray((response as any).runs)) {
+          (response as any).runs.push(...(pinnedSearchResponse as any).runs);
+        } else {
+          (response as any).runs = (pinnedSearchResponse as any).runs.slice();
+        }
+      }
+
+      // If there are any pending parents to fetch, do it before returning the response
+      const fetchParents = () => fetchMissingParents(response);
+      return shouldFetchParents ? fetchParents() : response;
+    });
+  };
+
+  // Wrap the WHOLE payload (primary + pinned merge included) in the superseding/coalescing
+  // registry when a projection is present; internal primary/pinned calls must not supersede
+  // each other, so the endpoint routing stays inside the wrapped executor.
+  return coalesceAndSupersedeProjectedSearch(
+    projection,
+    experimentIds,
+    pageToken,
+    {
+      experimentIds: (experimentIds ?? []).slice().sort(),
+      filter: filter || '',
+      runViewType: runViewType || 'ACTIVE_ONLY',
+      maxResults: maxResults || RUNS_SEARCH_MAX_RESULTS,
+      orderBy: orderBy || [],
+      pageToken: pageToken ?? null,
+      fetchParents: Boolean(shouldFetchParents),
+      pinned: (runsPinned ?? []).slice().sort(),
+      projection,
+    },
+    executeSearch,
+  );
 };
 
 export const SEARCH_RUNS_API = 'SEARCH_RUNS_API';

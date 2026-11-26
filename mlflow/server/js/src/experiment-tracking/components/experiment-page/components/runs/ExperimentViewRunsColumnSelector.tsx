@@ -151,8 +151,10 @@ export const ExperimentViewRunsColumnSelector = React.memo(
       [updateUIState],
     );
 
-    // Extract unique list of tags
-    const tagsKeyList = useMemo(() => Utils.getVisibleTagKeyList(runsData.tagsList), [runsData]);
+    // Extract unique list of tags: prefer the selector-provided tag key list (store tags unioned
+    // with the discovered data-keys catalog), falling back to the visible tags derived from
+    // loaded runs for other callers.
+    const tagsKeyList = useMemo(() => runsData.tagKeyList ?? Utils.getVisibleTagKeyList(runsData.tagsList), [runsData]);
 
     // Extract canonical key names for attributes, params, metrics and tags.
     const canonicalKeyNames = useMemo(

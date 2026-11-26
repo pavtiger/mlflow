@@ -28,6 +28,8 @@ interface ServerInfoResponse {
   logged_model_artifact_read_credentials_supported?: boolean;
   artifacts_presigned_only?: boolean;
   features_enabled?: Record<FeatureKey, boolean>;
+  /** Projected (lightweight) run reads: `runs/search-lite` and `runs/data-keys`. Absent on servers that predate it. */
+  run_projection_enabled?: boolean;
 }
 
 /**
@@ -203,6 +205,36 @@ export const getMultipartUploadsEnabledSync = (): boolean => {
 export const getPresignedUploadRunIdSupportedSync = (): boolean => {
   const cachedData = queryClientRef?.getQueryData<ServerInfoResponse>([SERVER_INFO_QUERY_KEY]);
   return cachedData?.presigned_upload_run_id_supported ?? false;
+};
+
+/**
+ * Tri-state projected-read capability from the cached server-info response:
+ * `undefined` while server-info has not loaded (pending), `false` when the flag is absent or
+ * false, `true` when the server advertises `run_projection_enabled`.
+ */
+export const getRunProjectionEnabledSync = (): boolean | undefined => {
+  const cachedData = queryClientRef?.getQueryData<ServerInfoResponse>([SERVER_INFO_QUERY_KEY]);
+  return cachedData === undefined ? undefined : cachedData?.run_projection_enabled === true;
+};
+
+/**
+ * Returns the cached server-info response, or joins the existing in-flight react-query request
+ * (same queryKey/queryFn, so no duplicate server-info call) when it has not resolved yet.
+ */
+export const ensureServerInfo = async (): Promise<ServerInfoResponse> => {
+  const cachedData = queryClientRef?.getQueryData<ServerInfoResponse>([SERVER_INFO_QUERY_KEY]);
+  if (cachedData !== undefined) {
+    return cachedData;
+  }
+  if (!queryClientRef) {
+    throw new Error('MLflow server-info query client is unavailable');
+  }
+  return queryClientRef.ensureQueryData({
+    queryKey: [SERVER_INFO_QUERY_KEY],
+    queryFn: fetchServerInfo,
+    staleTime: Infinity,
+    retry: false,
+  });
 };
 
 export const getArtifactsPresignedOnlySync = (): boolean => {

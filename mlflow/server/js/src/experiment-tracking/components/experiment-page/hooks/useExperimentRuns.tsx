@@ -17,9 +17,16 @@ import { shouldUsePredefinedErrorsInExperimentTracking } from '../../../../commo
 import Utils from '../../../../common/utils/Utils';
 import { useExperimentRunsAutoRefresh } from './useExperimentRunsAutoRefresh';
 import type { RunEntity, SearchRunsApiResponse } from '../../../types';
+import type { RunProjection } from '../../../runProjection/runProjection';
+import { buildRunProjection, discoverRunDataKeys, resetRunProjectionScope } from '../../../runProjection/runProjection';
 
 export type FetchRunsHookParams = ReturnType<typeof createSearchRunsParams> & {
-  requestedFacets: ExperimentPageSearchFacetsState;
+  requestedFacets: ExperimentPageSearchFacetsState & {
+    /** Stable projection hash stamped at request time so stale-projection responses can be discarded. */
+    __projectionHash: string | null;
+  };
+  /** Field projection for lightweight (search-lite) reads; absent when the server does not support them. */
+  projection?: RunProjection;
 };
 
 export type FetchRunsHookFunction = (
@@ -30,17 +37,28 @@ export type FetchRunsHookFunction = (
   },
 ) => Promise<{ runs: RunEntity[]; next_page_token?: string }>;
 
-// Calculate actual params to use for fetching runs
+// Calculate actual params to use for fetching runs. Attaches the current field projection (when
+// the server supports projected reads) and stamps requestedFacets with its stable hash so
+// auto-refresh discard checks can detect stale-projection responses.
 const createFetchRunsRequestParams = (
   searchFacets: ExperimentQueryParamsSearchFacets | null,
   experimentIds: string[],
   runsPinned: string[],
+  uiState: ExperimentPageUIState,
 ): FetchRunsHookParams | null => {
   if (!searchFacets || !experimentIds.length) {
     return null;
   }
+  const projectionWithHash = buildRunProjection(searchFacets, uiState);
   const searchParams = createSearchRunsParams(experimentIds, { ...searchFacets, runsPinned }, Date.now());
-  return { ...searchParams, requestedFacets: searchFacets };
+  return {
+    ...(projectionWithHash ? { projection: projectionWithHash.projection } : {}),
+    ...searchParams,
+    requestedFacets: {
+      ...searchFacets,
+      __projectionHash: projectionWithHash ? projectionWithHash.projectionHash : null,
+    },
+  };
 };
 
 /**
@@ -60,6 +78,15 @@ export const useExperimentRuns = (
   const enableWorkspaceModelsRegistryCall = true;
 
   const persistKey = useMemo(() => (experimentIds ? JSON.stringify(experimentIds.sort()) : null), [experimentIds]);
+  // Canonical serialization of the search facets: genuine filter changes alter it, while local
+  // state hydration replacing equivalent facet objects (fresh identities) does not.
+  const serializedSearchFacets = useMemo(() => JSON.stringify(searchFacets), [searchFacets]);
+  // Stable projection hash: identical across the pending -> true capability transition (the hash
+  // covers projection content only) and across fresh-but-equivalent UI state identities.
+  const projectionHash = useMemo(() => {
+    const projectionWithHash = buildRunProjection(searchFacets, uiState);
+    return projectionWithHash ? projectionWithHash.projectionHash : null;
+  }, [searchFacets, uiState]);
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
   const [isInitialLoadingRuns, setIsInitialLoadingRuns] = useState(true);
   const [nextPageToken, setNextPageToken] = useState<string | null>(null);
@@ -75,8 +102,12 @@ export const useExperimentRuns = (
     if (disabled) {
       return;
     }
+    // Drop the key-discovery catalogs of experiments no longer in scope and discard any
+    // in-flight pre-switch discovery responses.
+    resetRunProjectionScope(experimentIds);
     setIsInitialLoadingRuns(true);
     setRunsData(createEmptyRunsResult());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- persistKey is the canonical serialization of experimentIds; depending on the raw identity would reset on equivalent hydration.
   }, [persistKey, disabled]);
 
   const setResultRunsData = useCallback(
@@ -148,6 +179,17 @@ export const useExperimentRuns = (
 
             // In the end, load model versions for the fetched runs
             loadModelVersions(value.runs || []);
+
+            // Discover metric/param/tag key names for the fetched runs (projected mode only) and
+            // recompute the selectors once the catalog grew, so column/chart selectors see the
+            // discovered keys without hydrating all values.
+            discoverRunDataKeys(value.runs || [], fetchParams.experimentIds).then((applied) => {
+              if (!applied) {
+                return;
+              }
+              const latestParams = lastRequestedParams.current || fetchParams;
+              setResultRunsData(getStore(), latestParams.experimentIds, latestParams.requestedFacets);
+            });
             return value;
           })
           .catch((e: ErrorWrapper | PredefinedError) => {
@@ -175,19 +217,22 @@ export const useExperimentRuns = (
   );
 
   // Fetch runs when new request params are available
-  // (e.g. after search facets change)
+  // (e.g. after search facets change). Depends on stable serialized representations instead of
+  // object identities: local state hydration replaces equivalent searchFacets once during
+  // initialization, which used to issue a duplicate identical request.
   useEffect(() => {
     if (disabled) {
       return;
     }
-    const requestParams = createFetchRunsRequestParams(searchFacets, experimentIds, cachedPinnedRuns.current);
+    const requestParams = createFetchRunsRequestParams(searchFacets, experimentIds, cachedPinnedRuns.current, uiState);
     if (requestParams) {
       fetchRuns(requestParams);
     }
-  }, [fetchRuns, dispatch, disabled, searchFacets, experimentIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- persistKey/serializedSearchFacets/projectionHash are the canonical serializations of experimentIds/searchFacets/projection-relevant UI state; depending on the raw identities would refetch on equivalent hydration.
+  }, [fetchRuns, dispatch, disabled, persistKey, serializedSearchFacets, projectionHash]);
 
   const loadMoreRuns = async () => {
-    const requestParams = createFetchRunsRequestParams(searchFacets, experimentIds, cachedPinnedRuns.current);
+    const requestParams = createFetchRunsRequestParams(searchFacets, experimentIds, cachedPinnedRuns.current, uiState);
     if (!nextPageToken || !requestParams) {
       return [];
     }
@@ -209,6 +254,7 @@ export const useExperimentRuns = (
     runsData,
     isLoadingRuns: isLoadingRuns,
     lastFetchedTime,
+    uiState,
   });
 
   return {
@@ -226,6 +272,7 @@ const createEmptyRunsResult = () => ({
   datasetsList: [],
   experimentTags: {},
   metricKeyList: [],
+  tagKeyList: [],
   metricsList: [],
   modelVersionsByRunUuid: {},
   paramKeyList: [],

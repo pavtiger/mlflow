@@ -267,6 +267,18 @@ export class MlflowService {
     postJson({ relativeUrl: searchRunsPath(), data }).then(transformSearchRunsResponse);
 
   /**
+   * Search mlflow experiment runs with an explicit field projection (lightweight reads).
+   * Only available on servers advertising `run_projection_enabled` in server-info.
+   */
+  static searchRunsLite = (data: any) =>
+    postJson({ relativeUrl: 'ajax-api/2.0/mlflow/runs/search-lite', data }).then(transformSearchRunsResponse);
+
+  /**
+   * Discover distinct metric/param/tag key names for explicit run IDs, without hydrating values.
+   */
+  static getRunDataKeys = (data: any) => postJson({ relativeUrl: 'ajax-api/2.0/mlflow/runs/data-keys', data });
+
+  /**
    * List model artifacts
    */
   static listArtifacts = (data: any) => getJson({ relativeUrl: 'ajax-api/2.0/mlflow/artifacts/list', data });

@@ -37,6 +37,7 @@ export const createBaseUIState = (): ExperimentPageUIState => ({
 export const createBaseRunsData = (): ExperimentRunsSelectorResult => ({
   paramKeyList: [],
   metricKeyList: [],
+  tagKeyList: [],
   datasetsList: [],
   experimentTags: {},
   metricsList: [],

@@ -13,6 +13,7 @@ import { LIFECYCLE_FILTER, MODEL_VERSION_FILTER } from '../../../types';
 import type { KeyValueEntity } from '../../../../common/types';
 import { getLatestMetrics } from '../../../reducers/MetricReducer';
 import { getExperimentTags, getParams, getRunDatasets, getRunInfo, getRunTags } from '../../../reducers/Reducers';
+import { getDiscoveredRunDataKeys } from '../../../runProjection/runProjection';
 import { pickBy } from 'lodash';
 
 export type ExperimentRunsSelectorResult = {
@@ -35,6 +36,13 @@ export type ExperimentRunsSelectorResult = {
    * List of unique param keys
    */
   paramKeyList: string[];
+
+  /**
+   * List of unique tag keys (visible tags of loaded runs, unioned with the discovered
+   * data-keys catalog in projected mode). Consumers fall back to deriving visible tag keys
+   * from `tagsList` when absent.
+   */
+  tagKeyList?: string[];
 
   /**
    * List of metrics indexed by the respective runs.
@@ -231,6 +239,12 @@ export const experimentRunsSelector = (
     ),
   ) as Record<string, KeyValueEntity>[];
 
+  /**
+   * In projected (search-lite) mode, loaded runs carry only the projected keys, so the column
+   * and chart selectors additionally read the separately discovered data-keys catalog.
+   */
+  const discoveredRunDataKeys = getDiscoveredRunDataKeys(experimentIds);
+
   const firstExperimentId = experimentIds[0];
 
   /**
@@ -251,7 +265,17 @@ export const experimentRunsSelector = (
     runUuidsMatchingFilter,
     datasetsList,
     inputsOutputsList,
-    metricKeyList: Array.from(metricKeysSet.values()).sort(),
-    paramKeyList: Array.from(paramKeysSet.values()).sort(),
+    metricKeyList: Array.from(
+      new Set([...Array.from(metricKeysSet.values()), ...discoveredRunDataKeys.metric_keys]),
+    ).sort(),
+    paramKeyList: Array.from(
+      new Set([...Array.from(paramKeysSet.values()), ...discoveredRunDataKeys.param_keys]),
+    ).sort(),
+    tagKeyList: Array.from(
+      new Set([
+        ...tagsList.reduce<string[]>((keys, tags) => [...keys, ...Object.keys(tags || {})], []),
+        ...discoveredRunDataKeys.tag_keys,
+      ]),
+    ).sort(),
   };
 };

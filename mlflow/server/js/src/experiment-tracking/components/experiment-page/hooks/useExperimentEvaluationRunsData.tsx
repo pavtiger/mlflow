@@ -3,6 +3,7 @@ import type { KeyValueEntity } from '@mlflow/mlflow/src/common/types';
 import type { SearchRunsApiResponse } from '@mlflow/mlflow/src/experiment-tracking/types';
 import { MLFLOW_RUN_TYPE_TAG, MLFLOW_RUN_TYPE_VALUE_ISSUE_DETECTION } from '../../../constants';
 import { MlflowService } from '../../../sdk/MlflowService';
+import { getEvaluationRunProjection, routeProjectedSearchRuns } from '../../../runProjection/runProjection';
 import { useMemo } from 'react';
 
 export const SEARCH_RUNS_QUERY_KEY = 'SEARCH_RUNS';
@@ -56,7 +57,17 @@ export const useExperimentEvaluationRunsData = ({
       const keep = (pageRuns: SearchRunsApiResponse['runs']) =>
         excludeIssueDetectionRuns ? (pageRuns ?? []).filter((run) => !isIssueDetectionRun(run)) : (pageRuns ?? []);
 
-      let response = await MlflowService.searchRuns(requestBody);
+      // These reads classify runs via outputs.modelOutputs and the mlflow.runType tag, so both
+      // the initial and paginated searches carry the constant evaluation projection when the
+      // server supports search-lite; otherwise they fall back to stripped legacy searches.
+      const searchPage = (payload: typeof requestBody) =>
+        routeProjectedSearchRuns(
+          { ...payload, projection: getEvaluationRunProjection() },
+          MlflowService.searchRuns,
+          MlflowService.searchRunsLite,
+        );
+
+      let response = await searchPage(requestBody);
       if (!fetchAllPages && !excludeIssueDetectionRuns) return response;
 
       const runs = [...keep(response.runs)];
@@ -64,7 +75,7 @@ export const useExperimentEvaluationRunsData = ({
       // more pages waiting behind it, so keep paging until something survives the filter.
       let shouldFetchNextPage = Boolean(response.next_page_token) && (fetchAllPages || runs.length === 0);
       while (shouldFetchNextPage) {
-        response = await MlflowService.searchRuns({ ...requestBody, page_token: response.next_page_token });
+        response = await searchPage({ ...requestBody, page_token: response.next_page_token });
         runs.push(...keep(response.runs));
         shouldFetchNextPage = Boolean(response.next_page_token) && (fetchAllPages || runs.length === 0);
       }

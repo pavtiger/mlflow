@@ -6,6 +6,8 @@ import type { ExperimentRunsSelectorResult } from '../utils/experimentRuns.selec
 import { RUNS_AUTO_REFRESH_INTERVAL, createSearchRunsParams } from '../utils/experimentPage.fetch-utils';
 import type { FetchRunsHookFunction, FetchRunsHookParams } from './useExperimentRuns';
 import type { SearchRunsApiResponse } from '../../../types';
+import type { ExperimentPageUIState } from '../models/ExperimentPageUIState';
+import { buildRunProjection } from '../../../runProjection/runProjection';
 
 /**
  * Enables auto-refreshing runs on the experiment page.
@@ -21,6 +23,7 @@ export const useExperimentRunsAutoRefresh = ({
   cachedPinnedRuns,
   runsData,
   isLoadingRuns,
+  uiState,
 }: {
   cachedPinnedRuns: React.MutableRefObject<string[]>;
   lastFetchedTime: React.MutableRefObject<number | null>;
@@ -30,16 +33,21 @@ export const useExperimentRunsAutoRefresh = ({
   searchFacets: ExperimentQueryParamsSearchFacets | null;
   runsData: ExperimentRunsSelectorResult;
   isLoadingRuns: boolean;
+  uiState: ExperimentPageUIState;
 }) => {
   const refreshTimeoutRef = useRef<number | undefined>(undefined);
 
   const isLoadingImmediate = useRef(isLoadingRuns);
   const autoRefreshEnabledRef = useRef(enabled);
   const currentResults = useRef(runsData.runInfos);
+  // Latest UI state for the scheduled refresh closure, without re-arming the refresh timer on
+  // every UI state change.
+  const uiStateRef = useRef(uiState);
 
   currentResults.current = runsData.runInfos;
   isLoadingImmediate.current = isLoadingRuns;
   autoRefreshEnabledRef.current = enabled;
+  uiStateRef.current = uiState;
 
   useEffect(() => {
     // Each time the parameters change, clear the timeout and try to schedule a new one
@@ -61,14 +69,21 @@ export const useExperimentRunsAutoRefresh = ({
         const requestedRunsCount =
           Math.max(1, Math.ceil(initialRunsCount / RUNS_SEARCH_MAX_RESULTS)) * RUNS_SEARCH_MAX_RESULTS;
 
-        const requestParams = {
+        // Auto-refresh uses the same projection as the initial/manual fetches, and stamps the
+        // same requestedFacets hash so stale-projection responses are discarded consistently.
+        const projectionWithHash = buildRunProjection(searchFacets, uiStateRef.current);
+        const requestParams: FetchRunsHookParams = {
           ...createSearchRunsParams(
             experimentIds,
             { ...searchFacets, runsPinned: cachedPinnedRuns.current },
             Date.now(),
           ),
-          requestedFacets: searchFacets,
+          requestedFacets: {
+            ...searchFacets,
+            __projectionHash: projectionWithHash ? projectionWithHash.projectionHash : null,
+          },
           maxResults: requestedRunsCount,
+          ...(projectionWithHash ? { projection: projectionWithHash.projection } : {}),
         };
 
         let autoRefreshFetchedPages = 0;
